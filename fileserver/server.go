@@ -13,25 +13,31 @@ import (
     "strings"
 )
 
+type EditContent struct{
+  ID string
+  Content string
+}
+
 var lck sync.Mutex
 var id int
 
 func main() {
-    r := httprouter.New()
-    r.GET("/", homeHandler)
-    r.ServeFiles("/css/*filepath", http.Dir("public/css"))
+	r := httprouter.New()
+	r.GET("/", homeHandler)
 
-    // Posts collection
-    r.GET("/posts", postsIndexHandler)
-    r.POST("/posts", postsCreateHandler)
+	r.ServeFiles("/css/*filepath", http.Dir("public/css"))
 
-    // Posts singular
-    r.GET("/posts/:id", postShowHandler)
-    r.PUT("/posts/:id", postUpdateHandler)
-    r.GET("/posts/:id/edit", postEditHandler)
+	// Posts collection
+	r.GET("/posts", postsIndexHandler)
+	r.POST("/posts", postsCreateHandler)
 
-    fmt.Println("Starting server on :8080")
-    http.ListenAndServe(":8080", r)
+	// Posts singular
+	r.GET("/posts/:id", postShowHandler)
+	r.POST("/posts/:id", postUpdateHandler)
+	r.GET("/posts/:id/edit", postEditHandler)
+
+	fmt.Println("Starting server on :9090")
+	http.ListenAndServe(":9090", r)
 }
 
 func homeHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
@@ -50,8 +56,8 @@ func postsIndexHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Par
   var mdfiles []string
   for _,file := range files {
     name := file.Name()
-    if strings.HasSuffix(name,".html") {
-      name = name[:len(name)-5]
+    if strings.HasSuffix(name,".md") {
+      name = name[:len(name)-3]
     }
     mdfiles = append(mdfiles,name)
   }
@@ -72,17 +78,18 @@ func postsIndexHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Par
 func postsCreateHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
 
 	markdown := blackfriday.MarkdownCommon([]byte(r.FormValue("body")))
-  fp := path.Join("public", "show.html")
+  md_input := r.FormValue("body")
+  fp := path.Join("public", "create.html")
 	lck.Lock()
 	id++
 	var i = id
 	lck.Unlock()
-	f, err := os.Create(fmt.Sprintf("posts/%v.html", i))
+	f, err := os.Create(fmt.Sprintf("posts/%v.md", i))
 	if err != nil {
 		// don't ignore the error like I'm doing here.
 		return
 	}
-	fmt.Fprintln(f, string(markdown))
+	fmt.Fprintln(f, string(md_input))
 	f.Close()
 
   tmpl, err := template.ParseFiles(fp)
@@ -97,12 +104,55 @@ func postsCreateHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Pa
 }
 
 func postShowHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
+  fp := path.Join("public", "show.html")
     id := p.ByName("id")
-    fmt.Fprintln(rw, "showing post", id)
+    contents, err := ioutil.ReadFile("posts/"+id+".md")
+    if err != nil{
+      fmt.Fprintln(rw, "Post does not exist")
+      return
+    }
+
+    htmlout := blackfriday.MarkdownBasic(contents)
+    // rw.Write(htmlout)
+
+    tmpl, err := template.ParseFiles(fp)
+  	if err != nil {
+  		http.Error(rw, err.Error(), http.StatusInternalServerError)
+  		return
+  	}
+
+    if err := tmpl.Execute(rw, template.HTML(htmlout)); err != nil {
+  		http.Error(rw, err.Error(), http.StatusInternalServerError)
+  	}
+
 }
 
 func postUpdateHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
-    fmt.Fprintln(rw, "post update")
+  fp := path.Join("public", "update.html")
+  id := p.ByName("id")
+  markdownFilename := path.Join("posts", id+".md")
+  body := r.FormValue("body")
+
+  f, err := os.Create(markdownFilename)
+	if err != nil {
+		// don't ignore the error like I'm doing here.
+		return
+	}
+	fmt.Fprintln(f, body)
+	f.Close()
+  htmlout := blackfriday.MarkdownBasic([]byte(body))
+
+  tmpl, err := template.ParseFiles(fp)
+  if err != nil {
+    http.Error(rw, err.Error(), http.StatusInternalServerError)
+    return
+  }
+
+  if err := tmpl.Execute(rw, template.HTML(htmlout)); err != nil {
+    http.Error(rw, err.Error(), http.StatusInternalServerError)
+  }
+
+
 }
 
 func postDeleteHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
@@ -110,5 +160,30 @@ func postDeleteHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Par
 }
 
 func postEditHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
-    fmt.Fprintln(rw, "post edit")
+    fp := path.Join("public", "edit.html")
+    id := p.ByName("id")
+    markdownFilename := path.Join("posts", id+".md")
+    contents, err := ioutil.ReadFile(markdownFilename)
+
+    if err != nil{
+      //Assume that the file does not exist
+      fmt.Fprintln(rw, id+".md")
+      return
+    }
+
+    tmpl, err := template.ParseFiles(fp)
+  	if err != nil {
+  		http.Error(rw, err.Error(), http.StatusInternalServerError)
+  		return
+  	}
+
+    editContent := EditContent{
+      ID : id,
+      Content : string(contents),
+    }
+
+    if err := tmpl.Execute(rw, editContent); err != nil {
+  		http.Error(rw, err.Error(), http.StatusInternalServerError)
+  	}
+
 }

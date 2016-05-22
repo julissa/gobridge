@@ -10,16 +10,11 @@
         <hr />
       </div>
       <div class="container">
-        <ul>
-          {{ range . }}
-             <li><a href="/posts/{{.}}">{{.}}</a>[<a href="/posts/{{.}}/edit">edit</a>]</li>
-          {{end}}
-        </ul>
       </div>
 
-      <form action="/posts" method="POST">
+      <form action="/posts/{{.ID}}" method="POST">
         <div class="form-group">
-          <textarea class="form-control" name="body" cols="30" rows="10"></textarea>
+          <textarea class="form-control" name="body" cols="30" rows="10">{{.Content}}</textarea>
         </div>
 
         <div class="form-group">
