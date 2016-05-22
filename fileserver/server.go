@@ -8,9 +8,10 @@ import (
     "github.com/julienschmidt/httprouter"
     "github.com/russross/blackfriday"
     "sync"
-    "os"
-    "io/ioutil"
-    "strings"
+    "database/sql"
+    _ "github.com/mattn/go-sqlite3"
+    "log"
+    "strconv"
 )
 
 type EditContent struct{
@@ -18,11 +19,44 @@ type EditContent struct{
   Content string
 }
 
+var DB *sql.DB
 var lck sync.Mutex
 var id int
 
+func newDB() (*sql.DB, error) {
+    db, err := sql.Open("sqlite3", "posts.db")
+    if err != nil {
+        log.Println(err)
+        return nil, err
+    }
+
+    q := `CREATE TABLE IF NOT EXISTS
+      posts(id intenger primary key not null, content text);
+      `
+    if _, err := db.Exec(q); err != nil {
+        log.Println(err)
+        return nil, err
+    }
+
+    return db, nil
+}
+
+
 func main() {
+  var err error
+  if DB, err = newDB(); err != nil {
+    return
+  }
+
+  err = DB.QueryRow("SELECT MAX(id) from posts", id).Scan(&id)
+  if err != nil {
+    id = 0
+    log.Printf("got the following error trying to get max id: %v", err)
+  }
+
+
 	r := httprouter.New()
+
 	r.GET("/", homeHandler)
 
 	r.ServeFiles("/css/*filepath", http.Dir("public/css"))
@@ -48,19 +82,41 @@ func postsIndexHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Par
 
 	fp := path.Join("public", "index.html")
 
-  files, err := ioutil.ReadDir("posts")
-  if err != nil {
-    return
-  }
 
-  var mdfiles []string
-  for _,file := range files {
-    name := file.Name()
-    if strings.HasSuffix(name,".md") {
-      name = name[:len(name)-3]
+
+  rows, err := DB.Query("SELECT id from POSTS")
+    if err != nil {
+      log.Println(err)
+      return
     }
-    mdfiles = append(mdfiles,name)
-  }
+    defer rows.Close()
+    var mdfiles []string
+    for rows.Next(){
+      var id int
+      if err := rows.Scan(&id); err != nil{
+        log.Println(err)
+        continue
+      }
+      mdfiles = append(mdfiles, fmt.Sprintf("%v", id))
+    }
+
+    if err := rows.Err(); err != nil{
+      log.Println(err)
+    }
+
+  // files, err := ioutil.ReadDir("posts")
+  // if err != nil {
+  //   return
+  // }
+
+  // var mdfiles []string
+  // for _,file := range files {
+  //   name := file.Name()
+  //   if strings.HasSuffix(name,".md") {
+  //     name = name[:len(name)-3]
+  //   }
+  //   mdfiles = append(mdfiles,name)
+  // }
 
 
 	tmpl, err := template.ParseFiles(fp)
@@ -76,21 +132,39 @@ func postsIndexHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Par
 }
 
 func postsCreateHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
+  markdown := r.FormValue("body")
 
-	markdown := blackfriday.MarkdownCommon([]byte(r.FormValue("body")))
-  md_input := r.FormValue("body")
-  fp := path.Join("public", "create.html")
-	lck.Lock()
+
+  // log.Printf("post: body: %v", markdown)
+  lck.Lock()
 	id++
 	var i = id
 	lck.Unlock()
-	f, err := os.Create(fmt.Sprintf("posts/%v.md", i))
-	if err != nil {
-		// don't ignore the error like I'm doing here.
-		return
-	}
-	fmt.Fprintln(f, string(md_input))
-	f.Close()
+  _, err := DB.Exec("INSERT INTO posts (id, content) VALUES(?, ?)", i, markdown)
+    if err != nil {
+      log.Printf("Got the following error trying to save content to db: %v, %v, %v", i, markdown, err)
+      return
+    }
+
+  // md_input := r.FormValue("body")
+  fp := path.Join("public", "create.html")
+	// lck.Lock()
+	// id++
+	// var i = id
+	// lck.Unlock()
+
+
+	// f, err := os.Create(fmt.Sprintf("posts/%v.md", i))
+	// if err != nil {
+	// 	// don't ignore the error like I'm doing here.
+	// 	return
+	// }
+
+	// fmt.Fprintln(f, string(md_input))
+	// f.Close()
+
+  htmlout := blackfriday.MarkdownCommon([]byte(markdown))
+
 
   tmpl, err := template.ParseFiles(fp)
 	if err != nil {
@@ -98,15 +172,30 @@ func postsCreateHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Pa
 		return
 	}
 
-  if err := tmpl.Execute(rw, template.HTML(markdown)); err != nil {
+  if err := tmpl.Execute(rw, template.HTML(htmlout)); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
 }
 
 func postShowHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
   fp := path.Join("public", "show.html")
-    id := p.ByName("id")
-    contents, err := ioutil.ReadFile("posts/"+id+".md")
+  id := p.ByName("id")
+  iid, err := strconv.Atoi(id)
+    if err != nil{
+      log.Printf("got bad id %v: %v", id, err)
+      return
+    }
+
+  var contents string
+  if err := DB.QueryRow("select content from posts where id = ?", iid).Scan(&contents);
+    err != nil{
+      log.Printf("got bad id %v: %v", id, err)
+      return
+  }
+
+  htmlout := blackfriday.MarkdownBasic([]byte(contents))
+
+  /*contents, err := ioutil.ReadFile("posts/"+id+".md")
     if err != nil{
       fmt.Fprintln(rw, "Post does not exist")
       return
@@ -114,6 +203,8 @@ func postShowHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Param
 
     htmlout := blackfriday.MarkdownBasic(contents)
     // rw.Write(htmlout)
+
+    */
 
     tmpl, err := template.ParseFiles(fp)
   	if err != nil {
@@ -125,22 +216,27 @@ func postShowHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Param
   		http.Error(rw, err.Error(), http.StatusInternalServerError)
   	}
 
+
+
 }
 
 func postUpdateHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
   fp := path.Join("public", "update.html")
   id := p.ByName("id")
-  markdownFilename := path.Join("posts", id+".md")
-  body := r.FormValue("body")
+  iid, err := strconv.Atoi(id)
+    if err != nil{
+      log.Printf("got bad id %v: %v", id, err)
+      return
+    }
 
-  f, err := os.Create(markdownFilename)
-	if err != nil {
-		// don't ignore the error like I'm doing here.
-		return
-	}
-	fmt.Fprintln(f, body)
-	f.Close()
-  htmlout := blackfriday.MarkdownBasic([]byte(body))
+  content := r.FormValue("body")
+  _, err = DB.Exec("update posts set content=? where id=?", content, iid)
+    if err != nil{
+      log.Printf("failed to update %v: %v", id, err)
+      return
+    }
+
+  htmlout := blackfriday.MarkdownBasic([]byte(content))
 
   tmpl, err := template.ParseFiles(fp)
   if err != nil {
@@ -162,6 +258,20 @@ func postDeleteHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Par
 func postEditHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Params) {
     fp := path.Join("public", "edit.html")
     id := p.ByName("id")
+    iid, err := strconv.Atoi(id)
+      if err != nil{
+        log.Printf("got bad id %v: %v", id, err)
+        return
+      }
+
+    var contents string
+    if err := DB.QueryRow("select content from posts where id = ?", iid).Scan(&contents);
+    err != nil{
+        log.Printf("got bad id %v: %v", id, err)
+        return
+    }
+
+    /*
     markdownFilename := path.Join("posts", id+".md")
     contents, err := ioutil.ReadFile(markdownFilename)
 
@@ -170,17 +280,18 @@ func postEditHandler(rw http.ResponseWriter, r *http.Request, p httprouter.Param
       fmt.Fprintln(rw, id+".md")
       return
     }
+    */
+
+    editContent := EditContent{
+      ID : id,
+      Content : string(contents),
+    }
 
     tmpl, err := template.ParseFiles(fp)
   	if err != nil {
   		http.Error(rw, err.Error(), http.StatusInternalServerError)
   		return
   	}
-
-    editContent := EditContent{
-      ID : id,
-      Content : string(contents),
-    }
 
     if err := tmpl.Execute(rw, editContent); err != nil {
   		http.Error(rw, err.Error(), http.StatusInternalServerError)
